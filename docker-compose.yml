@@ -1,0 +1,71 @@
+# Возврат клиентов ветклиники на прививки: n8n + PostgreSQL + Ollama + Cloudflare Tunnel (эпизод 49, пример, не проверен на живом сервере).
+# Теги образов закрепите после первого успешного запуска (docker compose images) и сверьте с документацией проектов.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg_data:/var/lib/postgresql/data          # постоянный том: без него карточки, согласия и записи исчезнут
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest                     # локальная нейросеть: тексты пишутся на вашем сервере, персональные данные не уходят в чужие облака
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama                   # модели хранятся здесь; после запуска: docker compose exec ollama ollama pull <модель из OLLAMA_MODEL>
+    # порт наружу не публикуется: n8n обращается к http://ollama:11434 по внутренней сети
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}   # задать один раз и не менять
+      N8N_HOST: ${HOST}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${HOST}/
+      N8N_RESTRICT_FILE_ACCESS_TO: /backups
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"         # сценарий читает $env.TELEGRAM_BOT_TOKEN, ADMIN_CHAT_ID, CLINIC_NAME, OLLAMA_MODEL
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}
+      CLINIC_NAME: ${CLINIC_NAME}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      GENERIC_TIMEZONE: ${TZ}
+      TZ: ${TZ}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - backups:/backups                            # ночная выгрузка журнала записей
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}                # токен из Cloudflare Zero Trust; маршрут: ваш домен -> http://n8n:5678
+    depends_on:
+      - n8n
+
+volumes:
+  pg_data:
+  n8n_data:
+  ollama_data:
+  backups:

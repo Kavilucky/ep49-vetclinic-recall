@@ -1,0 +1,1328 @@
+{
+  "name": "Возврат клиентов ветклиники на прививки и процедуры (эп. 49)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ffee6b85-9fdc-5e24-9a75-03b37c926906",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      },
+      "notes": "Один вход для сообщений и нажатий inline-кнопок. Бот пишет первым только тем, кто сам нажал Start (ограничение Telegram): ссылка t.me/<бот>?start=reception в QR на стойке.",
+      "webhookId": ""
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.callback_query ? 'yes' : 'no' }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "yes"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Это кнопка записи?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "2f346a9e-c6c5-58e1-9378-a79269e45be7"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Разбор callback_data вида b:<recall_id>:<slot_id>. Чужие и битые данные отбрасываются.\nconst cq = $json.callback_query;\nconst m = /^b:(\\d+):(\\d+)$/.exec(cq.data || '');\nreturn { json: { ok: !!m, recall_id: m ? Number(m[1]) : 0, slot_id: m ? Number(m[2]) : 0, chat_id: cq.message.chat.id, cq_id: cq.id } };"
+      },
+      "name": "Разобрать кнопку",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "59518f8c-7477-5860-8631-1416163b3fd2",
+      "notes": "Why Code: разбор callback_data регулярным выражением и проверка формата."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Кнопка верна?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        -200
+      ],
+      "id": "e87a385d-c468-5c03-80c5-16db27cad6b2"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH s AS (UPDATE free_slots SET taken = true WHERE id = $2::bigint AND taken = false AND EXISTS (SELECT 1 FROM send_queue q WHERE q.recall_id = $1::bigint AND q.chat_id = $3::bigint) RETURNING id, slot_start), a AS (INSERT INTO appointments (recall_id, slot_id, slot_start) SELECT $1::bigint, s.id, s.slot_start FROM s ON CONFLICT (recall_id) DO NOTHING RETURNING slot_start), r AS (UPDATE recall_schedule SET status = 'booked' WHERE id = $1::bigint AND EXISTS (SELECT 1 FROM a) RETURNING id) SELECT to_char(a.slot_start AT TIME ZONE 'Europe/Moscow', 'DD.MM HH24:MI') AS slot_label FROM a;",
+        "options": {
+          "queryReplacement": "={{ [ $json.recall_id, $json.slot_id, $json.chat_id ] }}"
+        }
+      },
+      "name": "Занять окно и записать",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        -200
+      ],
+      "id": "ce7a85c5-08ce-592c-afb2-b5608c9e9d38",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Окно занимается атомарно одним запросом: два клиента не займут одно время. Часовой пояс в to_char поменяйте под свой регион.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.slot_label || '' }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Окно за нами?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        -200
+      ],
+      "id": "7233e16e-0fac-5369-a1a0-a2585d02f3ea"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Разобрать кнопку').item.json.chat_id }}",
+        "text": "=Запись подтверждена: {{ $json.slot_label }}. Ждём вас в клинике.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Запись подтверждена",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        -320
+      ],
+      "id": "e6a4a9c6-dea7-5fbe-9755-6e3ea4b1689a",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.ADMIN_CHAT_ID }}",
+        "text": "=Новая запись по возврату: {{ $('Занять окно и записать').item.json.slot_label }} (карточка напоминания №{{ $('Разобрать кнопку').item.json.recall_id }}).",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Сообщить администратору",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        -320
+      ],
+      "id": "617f6625-5bd3-508e-b049-6da638f67eae",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Разобрать кнопку').item.json.chat_id }}",
+        "text": "Это окно уже занято или запись не найдена. Позвоните в клинику, подберём время.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Окно уже занято",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        -80
+      ],
+      "id": "8000e29b-4919-5b57-ab53-a41c3ab99aec",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "name": "Неверная кнопка",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        960,
+        0
+      ],
+      "id": "34e946a9-c68a-5ad5-8a06-669b4ceee064",
+      "notes": "Битые данные кнопки игнорируются."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.message && $json.message.contact ? 'yes' : 'no' }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "yes"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Есть контакт?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "id": "a6cc62b2-33ba-5c5d-8643-86b7a6707e5a"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Нормализация телефона в формат E.164 (РФ): 8XXXXXXXXXX и 7XXXXXXXXXX и 10 цифр приводятся к +7XXXXXXXXXX. Остальное не принимается.\nconst c = $json.message.contact;\nlet d = String(c.phone_number || '').replace(/\\D/g, '');\nif (d.length === 11 && d[0] === '8') d = '7' + d.slice(1);\nif (d.length === 10) d = '7' + d;\nconst ok = d.length === 11 && d[0] === '7';\nreturn { json: { ok, phone_e164: ok ? '+' + d : '', chat_id: $json.message.chat.id, name: [c.first_name, c.last_name].filter(Boolean).join(' ') } };"
+      },
+      "name": "Нормализовать телефон",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        200
+      ],
+      "id": "b8b8363b-21b9-534b-b6f7-8b87a7b17c4b",
+      "notes": "Why Code: нормализация номера E.164 с условиями по длине; тот же алгоритм в SQL-функции normalize_phone_e164."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Телефон верен?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        200
+      ],
+      "id": "968aa380-ad6d-5380-8b0c-a70291b6d249"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO owners (phone_e164, name, telegram_chat_id, opt_in_status, opt_in_at, opt_in_text) VALUES ($1, NULLIF($2, ''), $3::bigint, 'opted_in', now(), $4) ON CONFLICT (phone_e164) DO UPDATE SET telegram_chat_id = EXCLUDED.telegram_chat_id, opt_in_status = 'opted_in', opt_in_at = now(), opt_in_text = EXCLUDED.opt_in_text, name = COALESCE(owners.name, EXCLUDED.name) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.phone_e164, $json.name, $json.chat_id, 'Согласие на напоминания о прививках и процедурах в Telegram (версия 1); текст согласуйте с юристом' ] }}"
+        }
+      },
+      "name": "Записать согласие",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        120
+      ],
+      "id": "70e67721-ac36-5516-b759-968eabaa2be8",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Согласие записывается с точным временем и версией текста. Текст согласия и срок хранения проверьте у юриста (152-ФЗ)."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Нормализовать телефон').item.json.chat_id }}",
+        "text": "Спасибо, согласие записано. Мы напомним о прививке заранее и дадим выбрать время. Отписаться: /stop",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Согласие записано",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        120
+      ],
+      "id": "fa0edaff-329b-5c79-a04f-24e032744027",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "Не удалось распознать номер. Нажмите кнопку «Поделиться номером» ещё раз или позвоните в клинику.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Телефон не распознан",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        300
+      ],
+      "id": "ad21c131-209a-5454-b920-f888bc490f62",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($json.message && $json.message.text || '').trim().toLowerCase() }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "/stop"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Команда /stop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        520
+      ],
+      "id": "81d38c72-b6db-54d2-a8d9-7c862047f15c"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE owners SET opt_in_status = 'opted_out' WHERE telegram_chat_id = $1::bigint RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.message.chat.id ] }}"
+        }
+      },
+      "name": "Отозвать согласие",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        440
+      ],
+      "id": "152a6ee1-ddad-5a7c-a4d9-1abd7a370b73",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Команда /stop?').item.json.message.chat.id }}",
+        "text": "Вы отписаны, напоминаний больше не будет. Вернуться можно по QR на стойке клиники.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Вы отписаны",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        440
+      ],
+      "id": "868f28ab-b986-5ecf-9ee8-156cee314096",
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($json.message && $json.message.text || '').trim().toLowerCase().startsWith('/start') ? 'yes' : 'no' }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "yes"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Команда /start?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        640
+      ],
+      "id": "9a503b91-67d8-5321-81e8-6d8938448602"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.message.chat.id, text: ($env.CLINIC_NAME || 'Клиника') + ': нажимая кнопку ниже, вы соглашаетесь получать напоминания о прививках и процедурах в этом чате и на обработку номера телефона и клички питомца для этой цели. Отписаться можно командой /stop.', reply_markup: { keyboard: [[{ text: 'Поделиться номером и согласиться', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } }) }}",
+        "options": {}
+      },
+      "name": "Запросить согласие и телефон",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        640
+      ],
+      "id": "48cf00b9-6477-5fbb-bf80-cbd821498274",
+      "notes": "Кнопка request_contact отправляет номер из профиля Telegram. Отправка идёт HTTP-запросом с токеном из .env (TELEGRAM_BOT_TOKEN)."
+    },
+    {
+      "parameters": {},
+      "name": "Игнор прочего",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        800
+      ],
+      "id": "7ffb3159-913b-5ead-9b44-b23b10f895f7"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Каждое утро 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1200
+      ],
+      "id": "a3f6127e-9e58-525f-9164-b5aa0cc51829"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT rs.id AS recall_id, o.telegram_chat_id AS chat_id, COALESCE(o.name, '') AS owner_name, p.name AS pet_name, COALESCE(p.species, '') AS species, rs.procedure, to_char(rs.due_date, 'DD.MM.YYYY') AS due FROM recall_schedule rs JOIN pets p ON p.id = rs.pet_id JOIN owners o ON o.id = p.owner_id WHERE rs.status = 'planned' AND rs.due_date = current_date + 14 AND o.opt_in_status = 'opted_in' AND o.telegram_chat_id IS NOT NULL ORDER BY rs.id;",
+        "options": {}
+      },
+      "name": "Питомцы на 14 дней",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        1200
+      ],
+      "id": "ee9742a3-930b-5bc4-98b4-db635eda265b",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Пишем только тем, у кого opt_in_status = opted_in и есть chat_id. Срок 14 дней меняется в запросе.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.recall_id || '' }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Есть кому писать?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        1200
+      ],
+      "id": "4608c8d0-f1e9-51f9-a6c0-c36d76833197"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.OLLAMA_MODEL || 'qwen2.5:3b', stream: false, options: { temperature: 0.4 }, prompt: 'Напиши короткое тёплое сообщение по-русски (2 предложения, без эмодзи, без выдуманных фактов). Владелец: ' + ($json.owner_name || 'клиент') + '. Питомец по кличке ' + $json.pet_name + ' (' + ($json.species || 'питомец') + '). Через 14 дней, ' + $json.due + ', плановая процедура: ' + $json.procedure + '. Предложи выбрать время кнопкой ниже.' }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "name": "Текст от Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        1100
+      ],
+      "id": "7e0a062b-e0ec-5fdc-9bbc-40334021a8ee",
+      "notes": "Локальная нейросеть на вашем сервере: персональные данные не уходят в чужие облака. Модель скачайте командой docker compose exec ollama ollama pull <модель>; русский текст проверьте на своём железе.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Сборка сообщения: ответ Ollama или запасной шаблон, если модель не ответила, ответ пустой или без клички.\nconst row = $('Питомцы на 14 дней').item.json;\nlet t = String($json.response || '').replace(/[*_`#]/g, '').trim();\nif (!t || t.length > 500 || !t.includes(row.pet_name)) {\n  t = `Здравствуйте${row.owner_name ? ', ' + row.owner_name : ''}! ${row.pet_name} через 14 дней (${row.due}) пора на плановую процедуру: ${row.procedure}. Выберите удобное время кнопкой ниже.`;\n}\nconst delay = Math.round(20 * $itemIndex * (1 + $itemIndex / 100)); // прогрессивная задержка: 20 с на сообщение, растёт с длиной очереди\nreturn { json: { recall_id: row.recall_id, chat_id: row.chat_id, text: t, delay_s: delay } };"
+      },
+      "name": "Собрать сообщение",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        1100
+      ],
+      "id": "0a6af402-f1f5-50d0-b6d7-790ea0601ae4",
+      "notes": "Why Code: запасной шаблон, проверка клички в тексте модели и расчёт задержки в одном месте."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH q AS (INSERT INTO send_queue (recall_id, chat_id, text, send_after) VALUES ($1::bigint, $2::bigint, $3, now() + make_interval(secs => $4::int)) ON CONFLICT (recall_id) DO NOTHING RETURNING recall_id) UPDATE recall_schedule SET status = 'queued' WHERE id IN (SELECT recall_id FROM q) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.recall_id, $json.chat_id, $json.text, $json.delay_s ] }}"
+        }
+      },
+      "name": "Поставить в очередь",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        1100
+      ],
+      "id": "fe856a6f-9c91-502b-af91-de7dead47991",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "name": "Очередь раз в минуту",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1700
+      ],
+      "id": "d329287f-986e-5e58-9a9d-568feb9ef70a"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH c AS (SELECT id FROM send_queue WHERE status = 'queued' AND send_after <= now() ORDER BY send_after LIMIT 5 FOR UPDATE SKIP LOCKED) UPDATE send_queue q SET status = 'sending', attempts = q.attempts + 1 FROM c WHERE q.id = c.id RETURNING q.id AS queue_id, q.recall_id, q.chat_id, q.text, (SELECT json_agg(x) FROM (SELECT id, to_char(slot_start AT TIME ZONE 'Europe/Moscow', 'DD.MM HH24:MI') AS label FROM free_slots WHERE taken = false AND slot_start > now() ORDER BY slot_start LIMIT 3) x) AS slots;",
+        "options": {}
+      },
+      "name": "Взять из очереди",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        1700
+      ],
+      "id": "685bdd03-917e-540b-971b-f82a6d1642aa",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Не больше 5 сообщений в минуту за запуск; задержки между клиентами задаются при постановке в очередь. Это защита от спама и блокировок.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.queue_id || '' }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Есть в очереди?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        1700
+      ],
+      "id": "f27c5966-d939-5250-9a8e-567771754c6e"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Клавиатура из трёх свободных окон: callback_data b:<recall_id>:<slot_id> (до 64 байт).\nconst slots = $json.slots || [];\nconst payload = { chat_id: $json.chat_id, text: slots.length ? $json.text : $json.text + ' Свободных окон сейчас нет: позвоните в клинику.' };\nif (slots.length) payload.reply_markup = { inline_keyboard: slots.map((s) => [{ text: s.label, callback_data: `b:${$json.recall_id}:${s.id}` }]) };\nreturn { json: { queue_id: $json.queue_id, recall_id: $json.recall_id, chat_id: $json.chat_id, payload } };"
+      },
+      "name": "Собрать клавиатуру",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        1700
+      ],
+      "id": "412bd1b2-ff79-56bd-a9e9-ab8d7572b368",
+      "notes": "Why Code: сборка inline-клавиатуры из массива окон."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {}
+      },
+      "name": "Отправить клиенту",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        1700
+      ],
+      "id": "d75f859f-c99e-5051-bb98-04a619627d4a",
+      "notes": "Ошибка (например, 403: клиент заблокировал бота) уходит на второй выход. Формат ошибки в вашей версии n8n сверьте на тестовой отправке.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH q AS (UPDATE send_queue SET status = 'sent', sent_at = now() WHERE id = $1::bigint RETURNING recall_id) UPDATE recall_schedule SET status = 'sent', notified_at = now() WHERE id IN (SELECT recall_id FROM q) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Собрать клавиатуру').item.json.queue_id ] }}"
+        }
+      },
+      "name": "Отметить отправленным",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        1620
+      ],
+      "id": "6ccea371-99f2-51d7-b1bd-cf0bd048ed06",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH q AS (UPDATE send_queue SET status = CASE WHEN attempts >= 3 OR $2::boolean THEN 'failed' ELSE 'queued' END, send_after = now() + interval '30 minutes' * attempts WHERE id = $1::bigint RETURNING chat_id) UPDATE owners SET opt_in_status = 'opted_out' WHERE $2::boolean AND telegram_chat_id IN (SELECT chat_id FROM q) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Собрать клавиатуру').item.json.queue_id, String($json.error && ($json.error.message || $json.error.description) || '').includes('403') ] }}"
+        }
+      },
+      "name": "Отметить ошибку",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        1800
+      ],
+      "id": "333d1e0f-6007-58c2-b123-cdeb07cb3232",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Повторы с прогрессивной задержкой 30 минут на попытку; после 3 попыток или ответа 403 запись помечается failed, а при 403 клиент считается отписавшимся.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Каждую ночь 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        2300
+      ],
+      "id": "83071ba1-a292-53af-a92d-fd3d6a901319"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT import_owners() AS merged;",
+        "options": {}
+      },
+      "name": "Нормализовать импорт и склеить дубли",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        2300
+      ],
+      "id": "bb6d92ea-2cc0-5d1e-80d7-644a6667e29b",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Функция import_owners() из init.sql приводит телефоны из таблицы owners_import к E.164 и склеивает карточки владельцев и питомцев по уникальным ключам.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT a.id, a.recall_id, a.slot_start, a.created_at, p.name AS pet, rs.procedure, o.opt_in_status FROM appointments a JOIN recall_schedule rs ON rs.id = a.recall_id JOIN pets p ON p.id = rs.pet_id JOIN owners o ON o.id = p.owner_id WHERE a.created_at > now() - interval '24 hours' ORDER BY a.id;",
+        "options": {}
+      },
+      "name": "Журнал за сутки",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        2300
+      ],
+      "id": "7b3aa020-d9c2-5338-a009-b890a4419fa9",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "mode": "once",
+        "options": {
+          "fileName": "=journal_{{ $now.toFormat('yyyyLLdd') }}.json"
+        }
+      },
+      "name": "В файл JSON",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        2300
+      ],
+      "id": "c8c05d3e-c0ac-5775-a97a-53ff186fc5fe"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/backups/journal_{{ $now.toFormat('yyyyLLdd') }}.json",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "name": "Записать в /backups",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        960,
+        2300
+      ],
+      "id": "b8bba143-0f31-5bb6-b273-0cac8604bc5d",
+      "notes": "Выгрузка журнала записей в том backups. Полная копия базы делается backup.sh (правило 3-2-1)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE recall_schedule SET status = 'skipped' WHERE status IN ('planned', 'queued', 'sent') AND due_date < current_date RETURNING id;",
+        "options": {}
+      },
+      "name": "Закрыть просроченные",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        2300
+      ],
+      "id": "9c8061a4-abc2-5357-9840-0de32bbb840b",
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Vetclinic PostgreSQL"
+        }
+      },
+      "notes": "Прошедшие по сроку напоминания помечаются skipped; записи остаются в базе.",
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Это кнопка записи?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Это кнопка записи?": {
+      "main": [
+        [
+          {
+            "node": "Разобрать кнопку",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Есть контакт?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разобрать кнопку": {
+      "main": [
+        [
+          {
+            "node": "Кнопка верна?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Кнопка верна?": {
+      "main": [
+        [
+          {
+            "node": "Занять окно и записать",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Неверная кнопка",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Занять окно и записать": {
+      "main": [
+        [
+          {
+            "node": "Окно за нами?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Окно за нами?": {
+      "main": [
+        [
+          {
+            "node": "Запись подтверждена",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Окно уже занято",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Запись подтверждена": {
+      "main": [
+        [
+          {
+            "node": "Сообщить администратору",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Есть контакт?": {
+      "main": [
+        [
+          {
+            "node": "Нормализовать телефон",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Команда /stop?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Нормализовать телефон": {
+      "main": [
+        [
+          {
+            "node": "Телефон верен?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Телефон верен?": {
+      "main": [
+        [
+          {
+            "node": "Записать согласие",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Телефон не распознан",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записать согласие": {
+      "main": [
+        [
+          {
+            "node": "Согласие записано",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Команда /stop?": {
+      "main": [
+        [
+          {
+            "node": "Отозвать согласие",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Команда /start?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Отозвать согласие": {
+      "main": [
+        [
+          {
+            "node": "Вы отписаны",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Команда /start?": {
+      "main": [
+        [
+          {
+            "node": "Запросить согласие и телефон",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Игнор прочего",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Каждое утро 08:00": {
+      "main": [
+        [
+          {
+            "node": "Питомцы на 14 дней",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Питомцы на 14 дней": {
+      "main": [
+        [
+          {
+            "node": "Есть кому писать?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Есть кому писать?": {
+      "main": [
+        [
+          {
+            "node": "Текст от Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Текст от Ollama": {
+      "main": [
+        [
+          {
+            "node": "Собрать сообщение",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Собрать сообщение": {
+      "main": [
+        [
+          {
+            "node": "Поставить в очередь",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Очередь раз в минуту": {
+      "main": [
+        [
+          {
+            "node": "Взять из очереди",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Взять из очереди": {
+      "main": [
+        [
+          {
+            "node": "Есть в очереди?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Есть в очереди?": {
+      "main": [
+        [
+          {
+            "node": "Собрать клавиатуру",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Собрать клавиатуру": {
+      "main": [
+        [
+          {
+            "node": "Отправить клиенту",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Отправить клиенту": {
+      "main": [
+        [
+          {
+            "node": "Отметить отправленным",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Отметить ошибку",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Каждую ночь 03:00": {
+      "main": [
+        [
+          {
+            "node": "Нормализовать импорт и склеить дубли",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Нормализовать импорт и склеить дубли": {
+      "main": [
+        [
+          {
+            "node": "Журнал за сутки",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Журнал за сутки": {
+      "main": [
+        [
+          {
+            "node": "В файл JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "В файл JSON": {
+      "main": [
+        [
+          {
+            "node": "Записать в /backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записать в /backups": {
+      "main": [
+        [
+          {
+            "node": "Закрыть просроченные",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
